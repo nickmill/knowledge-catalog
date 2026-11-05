@@ -14,6 +14,7 @@ import * as bqLeg from '../../src/libts/semantic/deploy_bigquery';
 import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
 import * as spannerLeg from '../../src/libts/semantic/deploy_spanner';
 import {SemanticModel} from '../../src/libts/semantic/ir';
+import {entryIdOf} from '../../src/libts/semantic/kc_ids';
 import * as kcEmit from '../../src/libts/semantic/knowledge_catalog';
 import * as loaderMod from '../../src/libts/semantic/loader';
 import * as osi from '../../src/libts/semantic/osi_converter';
@@ -71,7 +72,7 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-commands-'));
   process.chdir(dir);
   savedEnv = {...process.env};
-  process.env.KC_V2_ASPECTS = '0';
+  delete process.env.KC_V2_ASPECTS;
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   spyOn(console, 'log').mockImplementation(() => {});
   spyOn(console, 'error').mockImplementation(() => {});
@@ -167,6 +168,7 @@ describe('v2Aspects forwarding', () => {
   test(
       'push forwards v2Aspects: false when KC_V2_ASPECTS is "0"',
       async () => {
+        process.env.KC_V2_ASPECTS = '0';
         writeWorkspace();
         const preflightSpy = spyOn(kc, 'preflightKnowledgeCatalog');
         const emitSpy = spyOn(kcEmit, 'generateCatalogResources');
@@ -1050,7 +1052,6 @@ describe('a push of overview sidecars', () => {
   test('with KC_V2_ASPECTS on, push writes the overview sidecars, with ' +
            '--no-deployment too; a malformed sidecar or profile file fails it',
        async () => {
-         process.env.KC_V2_ASPECTS = '1';
          writeRoundTripWorkspace();
          const write = (name: string, text: string) => {
            fs.mkdirSync(path.dirname(path.join(entryGroupDir(), name)),
@@ -1603,8 +1604,8 @@ describe('a --force-remove rename that stopped after deleting the old model', ()
         .mockImplementation(async (...args: any[]) => {
           if (args[3] !== 'shop') return {status: 500, message: 'injected'};
           for (const name of [...entries.keys()]) {
-            const id = name.split('/').pop()!;
-            if (id === 'shop' || id.startsWith('shop.')) entries.delete(name);
+            const id = entryIdOf(name);
+            if (id === 'shop' || id.startsWith('shop/')) entries.delete(name);
           }
           return {status: 200};
         });
@@ -1630,7 +1631,7 @@ describe('the push-state label on the model entry', () => {
     test(`${flag}, pull refuses after a push that stopped at any write, ` +
              'until a push finishes',
          async () => {
-           if (v2) process.env.KC_V2_ASPECTS = '1';
+           if (!v2) process.env.KC_V2_ASPECTS = '0';
            writeRoundTripWorkspace();
            const {entries, stop} = fakeCatalog();
            expect(await push({deployment: false})).toBe(0);
@@ -1675,7 +1676,7 @@ describe('the push-state label on the model entry', () => {
     test(`${flag}, a push keeps the label and the source update time ` +
              'another writer sets on the model entry while it runs',
          async () => {
-           if (v2) process.env.KC_V2_ASPECTS = '1';
+           if (!v2) process.env.KC_V2_ASPECTS = '0';
            writeRoundTripWorkspace();
            const {entries} = fakeCatalog();
            expect(await push({deployment: false})).toBe(0);
@@ -1712,7 +1713,7 @@ describe('the push-state label on the model entry', () => {
     test(`${flag}, a push that cannot label the model entry finished says ` +
              'to push again before you pull, and that works',
          async () => {
-           if (v2) process.env.KC_V2_ASPECTS = '1';
+           if (!v2) process.env.KC_V2_ASPECTS = '0';
            writeRoundTripWorkspace();
            fakeCatalog();
            expect(await push({deployment: false})).toBe(0);
@@ -1817,6 +1818,7 @@ semantic_model:
   test('exits 0, removes the aspect, and finishes the writes and deletions ' +
            'after the update',
        async () => {
+         process.env.KC_V2_ASPECTS = '0';
          writeWorkspace();
          const modelPath = path.join(entryGroupDir(), 'commerce.yaml');
          fs.writeFileSync(modelPath, WITH_INSTRUCTIONS);
@@ -1846,16 +1848,17 @@ semantic_model:
   test('with KC_V2_ASPECTS on, exits 0 and removes sql-expressions and a ' +
            'field\'s guidelines too',
        async () => {
-         process.env.KC_V2_ASPECTS = '1';
          writeWorkspace();
          const modelPath = path.join(entryGroupDir(), 'commerce.yaml');
          fs.writeFileSync(modelPath, WITH_INSTRUCTIONS);
          const {entries} = fakeCatalog();
          patchLikeDataplex(entries);
          expect(await push({})).toBe(0);
-         // Another writer adds two aspects that push owns under the flag.
          const customer = () =>
              entries.get(named('commerce/entities/Customer'))!.aspects!;
+         expect(Object.keys(customer()))
+             .toContain('dataplex-types.global.guidelines');
+         // Another writer adds two aspects that push owns under the flag.
          customer()['dataplex-types.global.sql-expressions'] = {
            aspectType:
                'projects/dataplex-types/locations/global/aspectTypes/' +
@@ -1969,7 +1972,6 @@ entities:
   test('a graph push with KC_V2_ASPECTS on stops at an aspect too large ' +
            'before the graph deploys',
        async () => {
-         process.env.KC_V2_ASPECTS = '1';
          const model = ltvUnbound(['staging']).replace(
              'propertyGraphs/staging" }', 'propertyGraphs/staging", profile: staging }');
          const eg = writeModel(model);
@@ -2833,7 +2835,7 @@ describe('what a push says about relationships', () => {
      true, TWO_ON_ONE_PAIR, 0,
      'Wrote 5 new and 0 updated Knowledge Catalog entries; wrote 5 entry ' +
          'links.'],
-    ['relationships in both directions on one pair stop the push', false,
+    ['relationships in both directions on one pair stop the push', true,
      TWO_ON_ONE_PAIR.replace(
          PAID_BY,
          '\n      - { name: first_order_of, from: Customer, to: Order, ' +
@@ -2843,7 +2845,7 @@ describe('what a push says about relationships', () => {
          "runs from 'Customer' to 'Order', and relationship 'bought_by' runs " +
          'the other way; keep the relationships between two entities in one ' +
          'direction.'],
-    ['a relationship from an entity to itself stops the push', false,
+    ['a relationship from an entity to itself stops the push', true,
      TWO_ON_ONE_PAIR.replace(
          PAID_BY,
          '\n      - { name: referred_by, from: Customer, to: Customer, ' +
@@ -2861,7 +2863,7 @@ describe('what a push says about relationships', () => {
     test(title, async () => {
       writeWorkspace();
       fs.writeFileSync(path.join(entryGroupDir(), 'commerce.yaml'), model);
-      if (v2) process.env.KC_V2_ASPECTS = '1';
+      if (!v2) process.env.KC_V2_ASPECTS = '0';
       fakeCatalog();
 
       expect(await push({})).toBe(code);
